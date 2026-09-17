@@ -1,0 +1,41 @@
+# Orchestration
+langchain==0.3.14
+langchain-core==0.3.29
+langchain-community==0.3.14
+langchain-experimental==0.3.4
+langgraph==0.2.62
+
+# LLM serving
+langchain-groq==0.2.3
+python-dotenv==1.0.1
+# langchain-ollama==0.2.2   # uncomment when using local Ollama
+# langchain-openai==0.3.1   # uncomment when using local vLLM
+
+# Embeddings / vector store / sparse / rerank
+langchain-huggingface==0.1.2
+fastembed==0.4.2          # ONNX-based embeddings -- no PyTorch/DLL issues on Windows
+faiss-cpu==1.9.0.post1
+rank_bm25==0.2.2
+rapidfuzz==3.11.0
+# sentence-transformers==3.3.1  # requires torch; replaced by fastembed
+
+# Document ingestion
+pypdf==5.1.0
+langchain-text-splitters==0.3.5
+
+# Structured output / guardrails
+pydantic==2.10.4
+
+# Evaluation
+ragas==0.2.10
+datasets==3.2.0
+
+# Data layer
+pandas==2.2.3
+pyarrow==18.1.0
+
+# UI
+streamlit==1.41.1
+
+# Testing
+pytest==8.3.4

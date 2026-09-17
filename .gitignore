@@ -1,0 +1,26 @@
+# Secrets -- never commit real keys
+.env
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.venv/
+venv/
+*.egg-info/
+dist/
+build/
+
+# Data -- raw FAERS files and derived artifacts are large; keep out of git
+data/raw/
+data/processed/
+data/vector_stores/
+
+# External docs (PDFs) -- keep out of git
+data/external_docs/
+
+# IDE / OS
+.vscode/
+.idea/
+*.DS_Store
+Thumbs.db

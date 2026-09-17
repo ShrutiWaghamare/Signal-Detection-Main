@@ -1,0 +1,17 @@
+[
+  {
+    "query": "What is the PRR and ROR for DEPO-PROVERA and MENINGIOMA?",
+    "expected_drug": "DEPO-PROVERA",
+    "expected_event": "MENINGIOMA"
+  },
+  {
+    "query": "How many serious reports are there for PARAGARD T 380A and FOREIGN BODY IN REPRODUCTIVE TRACT?",
+    "expected_drug": "PARAGARD T 380A",
+    "expected_event": "FOREIGN BODY IN REPRODUCTIVE TRACT"
+  },
+  {
+    "query": "Is there a reporting signal between DESOXIMETASONE and DUODENAL ULCER PERFORATION?",
+    "expected_drug": "DESOXIMETASONE",
+    "expected_event": "DUODENAL ULCER PERFORATION"
+  }
+]

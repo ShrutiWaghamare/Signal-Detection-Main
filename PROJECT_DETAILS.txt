@@ -1,0 +1,271 @@
+================================================================================
+PHARMACOVIGILANCE RAG AGENT — PROJECT DETAILS
+================================================================================
+Purpose of this document: single reference for tech stack, architecture,
+model choices, and what each file in the repo does. Read this before writing
+or reviewing any code in this project.
+
+--------------------------------------------------------------------------------
+1. WHAT CHANGED FROM THE OLD POC
+--------------------------------------------------------------------------------
+OLD POC:
+  Python script computes PRR/ROR/priority_score once (offline)
+      -> saved to signal_review_report.parquet
+      -> Streamlit always retrieves top-k from ONE FAISS/BM25 index over that
+         same report
+      -> LLM always runs once, only reformats retrieved rows into prose
+
+Problem: retrieval was searching pre-computed numbers. The LLM had nothing
+real to do except restate numbers that already existed. Not RAG, not agentic,
+just templating.
+
+NEW POC:
+  A tool-calling LangChain AGENT receives the analyst's natural-language
+  question. Per query, the agent itself decides:
+    - whether it needs statistics (PRR/ROR/case counts) -> calls a CODE tool
+      that writes + executes real Python/pandas against the raw FAERS tables
+      (numbers are still computed by real code execution, never guessed by
+      the model's weights -- but the LLM authors the calculation itself)
+    - whether it needs literature evidence -> calls the literature retriever
+    - whether it needs drug label warnings -> calls the label retriever
+    - whether it has enough evidence to answer, or needs another tool call
+  The final answer is validated by a guardrail/schema layer before display.
+
+This is what makes it "actually RAG + LangChain" instead of a fixed pipeline
+with an LLM bolted on the end.
+
+--------------------------------------------------------------------------------
+2. TECH STACK
+--------------------------------------------------------------------------------
+
+ORCHESTRATION
+  - langchain, langchain-core         Agent, tools, prompts, runnables
+  - langgraph                         Explicit state graph for the agent loop
+                                       (use once the agent needs to retry/loop
+                                       across tools -- gives an inspectable
+                                       trace instead of a black-box loop)
+
+LLM SERVING (local, open source)
+  - Ollama for local dev              Easiest way to pull + serve open models
+  - vLLM as upgrade path              OpenAI-compatible API, faster on GPU,
+                                       swap-in replacement for Ollama later
+                                       with near-zero LangChain code changes
+  - langchain-ollama                  LangChain <-> Ollama binding
+
+MODELS TO TEST (open source, all support tool/function calling)
+  1. Qwen2.5 7B Instruct     - best instruction-following of this group,
+                                primary candidate
+  2. Llama 3.1 8B Instruct   - strong general reasoning baseline
+  3. Mistral 7B Instruct v0.3 - fast, solid grounded-QA behavior
+  4. Phi-3.5-mini (3.8B)     - lightweight baseline, similar size to old
+                                Qwen 3B model, useful lower bound
+  (optional 5th) BioMistral 7B - biomedical-tuned, test whether domain
+                                tuning improves grounding OR makes it more
+                                prone to overconfident/causal language
+  Run the SAME eval query set through all of them, score with RAGAS
+  (section 6), report side by side. That comparison table is a deliverable.
+
+EMBEDDING MODEL
+  - sentence-transformers/all-MiniLM-L6-v2   Default: fast, small, good
+                                              enough for this corpus size
+  - (optional upgrade) BAAI/bge-small-en-v1.5  Slightly stronger retrieval,
+                                              worth A/B testing in eval
+
+VECTOR DATABASE
+  - FAISS (faiss-cpu), for now, as requested.
+    Reasoning kept on file: FAISS runs local/in-process, no data leaves the
+    machine (relevant since this is adverse-event data), no account/network
+    dependency, free, fine up to a few million vectors -- more than enough
+    here. Pinecone remains a valid swap later (LangChain's VectorStore
+    interface makes it close to a one-line change: FAISS -> PineconeVectorStore)
+    if this ever needs to move to shared/cloud infrastructure.
+  - THREE separate FAISS indexes, not one merged index:
+      1. signals index      (structured signal-report text)
+      2. literature index   (PubMed-style abstracts / lit_ref text)
+      3. label index        (FDA drug label PDF chunks)
+    Kept separate because retrieval behavior differs a lot between
+    structured signal text and long-form PDF prose; merging hurts both.
+
+SPARSE RETRIEVAL
+  - rank_bm25          Sparse half of hybrid retrieval
+
+RERANKING
+  - sentence-transformers cross-encoder
+    (cross-encoder/ms-marco-MiniLM-L-6-v2, or BAAI/bge-reranker-base)
+    Reranks the fused BM25+FAISS top-k candidates down to the final top-3
+    shown in the UI. This is what actually answers "why these 3 results."
+
+DOCUMENT INGESTION (PDFs, multi-year data)
+  - pypdf + langchain-community PyPDFLoader   PDF text extraction
+  - langchain-text-splitters RecursiveCharacterTextSplitter   Chunking
+  - (optional) unstructured   If label PDFs have complex tables worth
+                              preserving structurally
+
+CODE-EXECUTION TOOL (this is how the LLM "calculates" without guessing)
+  - langchain_experimental.tools.PythonAstREPLTool
+    Given the raw/cleaned pandas DataFrames in its local namespace, the LLM
+    WRITES the PRR/ROR/case-count formula as Python and the tool EXECUTES
+    it for real. The LLM authors and triggers the calculation; the tool
+    guarantees numeric correctness. This is the resolution to "I don't want
+    to manually calculate, I want my LLM to do it" that doesn't reintroduce
+    LLM arithmetic hallucination on 800k+ row counts.
+
+STRUCTURED OUTPUT / GUARDRAILS
+  - Pydantic v2                        Schema for the final answer
+  - llm.with_structured_output(...)    Forces the model into that schema
+  - Guardrail checks (rule-based, run after generation):
+      - numeric faithfulness: every number in the answer must trace back
+        to a tool/retrieval output, not appear from nowhere
+      - causal-language filter: block "proves", "confirms", "causes",
+        "definitively"
+      - empty-evidence refusal: if no tool/retriever returned anything,
+        say so explicitly instead of answering anyway
+
+EVALUATION
+  - ragas               Faithfulness, answer relevancy, context precision/
+                         recall -- run per model for the comparison table
+  - eval_queries.json    Hand-labeled set of drug/event queries with known
+                         correct facts -- YOU write this, it's the ground
+                         truth the automated metrics are checked against
+
+DATA LAYER (unchanged, deterministic, NOT the LLM's job)
+  - pandas, pyarrow      Raw FAERS table loading, cleaning, parquet I/O.
+                         This layer stays plain Python. The agent calls INTO
+                         it via tools; it never replaces it.
+
+UI
+  - Streamlit            Kept. Dashboard now also renders the agent's
+                         intermediate steps (which tool fired, with what
+                         input/output, in what order) so retrieval and
+                         calculation decisions are visible, not hidden in
+                         a verbose console log.
+
+--------------------------------------------------------------------------------
+3. FOLDER STRUCTURE
+--------------------------------------------------------------------------------
+pv_rag_agent/
+  data/
+    raw/                          Raw FAERS ASCII quarter files (unchanged
+                                   source data, read-only)
+    processed/                    Cleaned parquet tables (demo/drug/reac/outc)
+    external_docs/
+      labels/                     FDA drug label PDFs you download
+      literature/                 Literature/abstract PDFs or text you gather
+    vector_stores/
+      signals/                    Saved FAISS index over signal-report text
+      labels/                     Saved FAISS index over label PDF chunks
+      literature/                 Saved FAISS index over literature chunks
+
+  src/
+    config.py                     Paths, constants, supported quarters
+
+    tools/
+      stats_code_tool.py          PythonAstREPLTool setup: exposes cleaned
+                                   DataFrames to the agent so it can WRITE
+                                   and RUN the PRR/ROR/case-count formulas
+                                   itself, on demand, per query
+      signal_lookup_tool.py       @tool: exact/fuzzy drug+event name
+                                   resolution against the known vocabulary
+                                   (so "Depo Provera" matches "DEPO-PROVERA")
+
+    retrieval/
+      signal_retriever.py         Hybrid (BM25 + FAISS, fused with
+                                   Reciprocal Rank Fusion) retriever over
+                                   signal-report evidence text, with an
+                                   exact-match override: if the query is an
+                                   exact/near-exact drug+event match, that
+                                   document is forced to rank 1
+      literature_retriever.py     Same hybrid pattern, over literature docs
+      label_retriever.py          Same hybrid pattern, over label PDF chunks
+      reranker.py                 Cross-encoder reranker applied to the
+                                   fused candidates before final top-3
+
+    ingestion/
+      faers_ingest.py             Loads/cleans raw FAERS tables (join logic
+                                   lives here ONCE; downstream code reads the
+                                   flattened result, not raw joins every time)
+      pdf_ingest.py                PyPDFLoader + text splitter for label and
+                                   literature PDFs
+      build_vector_stores.py      One-time/refreshable script: builds and
+                                   saves all three FAISS indexes to disk
+
+    agent/
+      llm_provider.py             Builds the LLM client (Ollama now, vLLM-
+                                   ready), model name is a single parameter
+                                   so swapping models for comparison is a
+                                   one-line change
+      prompts.py                  System prompt defining the agent's tool-use
+                                   policy (always call stats tool for numbers,
+                                   never estimate, no causal language, etc.)
+      build_agent.py               create_tool_calling_agent + AgentExecutor
+                                   wiring: registers all tools, returns an
+                                   executor with return_intermediate_steps=True
+
+    guardrails/
+      schemas.py                   Pydantic model for the final structured
+                                   answer (relevant_signals, evidence,
+                                   interpretation, limitations,
+                                   recommended_review) with the causal-
+                                   language validator
+      validators.py                Post-generation checks: numeric
+                                   faithfulness, empty-evidence handling
+
+    eval/
+      eval_queries.json             Hand-labeled query set + expected facts
+      ragas_eval.py                 Runs the query set through each candidate
+                                   model, scores with RAGAS, prints/saves the
+                                   comparison table
+
+  tests/
+    test_stats_code_tool.py        Confirms the code tool's executed PRR/ROR
+                                   matches manually-verified expected values
+    test_retrieval.py              Confirms exact-match override and RRF
+                                   fusion behave as expected on known cases
+
+  app.py                           Streamlit entrypoint: takes the analyst's
+                                   question, invokes the agent, renders the
+                                   structured answer AND the intermediate
+                                   tool-call trace, plus the disclaimer banner
+  requirements.txt                 Pinned dependencies
+  .env.example                     Placeholder for any API keys / base URLs
+                                   (e.g. Ollama base_url, Pinecone key if
+                                   ever swapped in)
+  README.md                        Short human-facing setup/run instructions
+  PROJECT_DETAILS.txt              This file
+
+--------------------------------------------------------------------------------
+4. WHAT STAYS DETERMINISTIC (NOT THE LLM'S JOB), AND WHY
+--------------------------------------------------------------------------------
+  - Raw FAERS loading, cleaning, table joins        -> ingestion/faers_ingest.py
+  - PRR/ROR arithmetic itself (the executed code)   -> runs inside
+                                                        PythonAstREPLTool,
+                                                        triggered BY the LLM,
+                                                        EXECUTED as real code
+  - Parquet/index persistence                        -> ingestion/*, plain I/O
+
+  The LLM's expanded job: decide when statistics are needed, decide which
+  retriever(s) to query, author the calculation code that the tool executes,
+  reconcile evidence from up to 3 sources, and produce one structured,
+  guardrail-checked answer. This is "the LLM doing more" without the LLM
+  silently producing a wrong safety-relevant number from memory.
+
+--------------------------------------------------------------------------------
+5. NEXT STEPS (implementation order)
+--------------------------------------------------------------------------------
+  1. src/config.py + src/ingestion/faers_ingest.py   (data layer, unchanged
+     logic, just relocated)
+  2. src/tools/stats_code_tool.py                     (get numbers working
+     via code execution first -- this is the core ask)
+  3. src/retrieval/signal_retriever.py + reranker.py  (hybrid + RRF + rerank
+     over existing signal text, no new data needed yet)
+  4. src/agent/llm_provider.py + prompts.py + build_agent.py  (wire the
+     agent with just the stats tool + signal retriever first)
+  5. app.py                                            (basic trace UI,
+     validate end to end before adding more corpora)
+  6. src/ingestion/pdf_ingest.py + label/literature retrievers  (expand
+     corpora once the core loop works)
+  7. src/guardrails/schemas.py + validators.py          (lock down output
+     quality)
+  8. src/eval/ragas_eval.py + eval_queries.json          (multi-model
+     comparison table)
+================================================================================
