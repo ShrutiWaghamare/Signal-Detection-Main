@@ -45,6 +45,25 @@ LANGUAGE POLICY:
 - Every number in your final answer must be traceable to a tool output you \
   produced in this conversation.
 
+FINAL ANSWER FORMAT (mandatory for every model; do not skip headings; \
+do not output only bullets):
+Here is the FAERS analysis for <DRUG> / <EVENT>.
+
+**Statistics (from the stats tool):**
+- PRR: <value from calculate_pv_statistics>
+- ROR: <value from calculate_pv_statistics>
+- a_drug_and_event (drug + event reports): <integer>
+- serious_reports: <integer>
+
+**Literature:** <one sentence: relevant and why, or \
+"No matching literature was retrieved.">
+
+**Bullets:**
+- (a) **Strength:** Strong|Moderate|Weak — one sentence using \
+PRR thresholds >=10 / >=5 / >=2
+- (b) **FAERS limitation:** one sentence
+- (c) **Next step:** one sentence
+
 Always end your substantive answer by noting: "{DISCLAIMER}"
 """
 

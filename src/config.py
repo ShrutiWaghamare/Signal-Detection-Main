@@ -76,17 +76,27 @@ OLLAMA_BASE_URL = "http://localhost:11434"
 
 DEFAULT_LLM_MODEL = "openai/gpt-oss-120b"
 
-# Models available on Groq developer/free plan with tool calling support.
-CANDIDATE_LLM_MODELS: list[str] = [
-    "openai/gpt-oss-120b",   # primary -- 120B params, strongest tool calling, ~500 t/s
-    "openai/gpt-oss-20b",    # faster alternative -- 20B params, ~1000 t/s
-]
+# Groq hosted (free key) + one local open-source model for side-by-side comparison.
+# Llama 3.1 8B is the comparison pick: tool-calling, stronger than Phi-3.5, more
+# standard than Mistral 7B for this agent. Serve it with Ollama, not Groq
+# (Groq Llama 8B/70B 404 on this free org).
+MODEL_PROVIDERS: dict[str, str] = {
+    "openai/gpt-oss-120b": "groq",
+    "qwen/qwen3.8-27b": "groq",
+    "llama3.1:8b": "ollama",
+    "qwen2.5:3b": "ollama",
+}
+CANDIDATE_LLM_MODELS: list[str] = list(MODEL_PROVIDERS.keys())
 
-# Local-serving candidates kept for when you're on GPU hardware that can
-# actually run them (see build_ollama_llm / build_vllm_llm).
+
+def provider_for_model(model: str) -> str:
+    return MODEL_PROVIDERS.get(model, DEFAULT_LLM_PROVIDER)
+
+# Extra local tags (not in the UI dropdown). Pull with `ollama pull <tag>`.
 LOCAL_CANDIDATE_LLM_MODELS: list[str] = [
+    "qwen2.5:3b",
+    "llama3.1:8b",
     "qwen2.5:7b-instruct",
-    "llama3.1:8b-instruct-q4_0",
     "mistral:7b-instruct-v0.3",
     "phi3.5:3.8b-mini-instruct",
 ]

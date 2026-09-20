@@ -29,9 +29,8 @@ import time
 
 logger = logging.getLogger(__name__)
 
-# Judge uses a smaller Groq model so it does not share the 120B tokens-per-minute
-# bucket that the main agent just consumed (free tier is 8000 TPM per model).
-_JUDGE_MODEL = "openai/gpt-oss-20b"
+# Same Groq 120B as the main agent. Shares that model's TPM/TPD bucket.
+_JUDGE_MODEL = "openai/gpt-oss-120b"
 
 _SYSTEM_PROMPT = """\
 Pharmacovigilance fact-checker. Return JSON only, no extra text.
@@ -101,7 +100,7 @@ def run_llm_judge(
     ----------
     answer:       The final text the agent produced.
     tool_outputs: List of raw strings returned by each tool call.
-    judge_model:  Groq model slug to use for judging (default: gpt-oss-20b).
+    judge_model:  Groq model slug to use for judging (default: gpt-oss-120b).
 
     Returns
     -------

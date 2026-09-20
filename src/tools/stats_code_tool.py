@@ -11,11 +11,42 @@ produces the final number from memory.
 
 from __future__ import annotations
 
+import re
+
 import pandas as pd
 from langchain_core.tools import tool as tool_decorator
 from langchain_experimental.tools import PythonAstREPLTool
 
 from src.ingestion.faers_ingest import load_signal_summary
+
+_PAIR_IN_FILTER = re.compile(
+    r"drugname\s*==\s*['\"]([^'\"]+)['\"].*?\bpt\s*==\s*['\"]([^'\"]+)['\"]",
+    re.I | re.S,
+)
+
+
+def _lookup_python(drug: str, event: str) -> str:
+    drug, event = drug.strip().upper(), event.strip().upper()
+    return (
+        "row = signal_df[(signal_df['drugname']=="
+        f"'{drug}') & (signal_df['pt']=='{event}')]\n"
+        "print(row[['prr','ror','a_drug_and_event','serious_reports']])"
+    )
+
+
+def _coerce_python_code(python_code: str, query: str) -> str:
+    """Accept pandas from Groq, or a filter string from small local models."""
+    code = (python_code or "").strip()
+    filt = (query or "").strip()
+    if code and "signal_df" in code:
+        return code
+    blob = code or filt
+    match = _PAIR_IN_FILTER.search(blob)
+    if match:
+        return _lookup_python(match.group(1), match.group(2))
+    if code:
+        return code
+    return filt
 
 _STATS_TOOL_DESCRIPTION = """\
 Execute Python/pandas code against the FAERS signal summary DataFrame to \
@@ -108,14 +139,23 @@ def build_stats_code_tool(signal_df: pd.DataFrame | None = None):
     )
 
     @tool_decorator("calculate_pv_statistics")
-    def stats_tool(python_code: str) -> str:
+    def stats_tool(python_code: str = "", query: str = "") -> str:
         """Execute Python/pandas code against the FAERS signal summary DataFrame \
 to retrieve PRR, ROR, case counts, or serious-outcome stats for a drug-event pair. \
 The DataFrame `signal_df` is pre-loaded with columns: drugname, pt, \
 a_drug_and_event, b_drug_no_event, c_event_no_drug, d_neither, \
 total_reports, prr, ror, serious_reports. \
-Example: signal_df[(signal_df['drugname']=='ASPIRIN') & (signal_df['pt']=='HAEMORRHAGE')][['prr','ror']]. \
+Prefer argument python_code with pandas, e.g. \
+signal_df[(signal_df['drugname']=='ASPIRIN') & (signal_df['pt']=='HAEMORRHAGE')][['prr','ror']]. \
+Small models may instead pass query like \
+drugname=='DEPO-PROVERA' AND pt=='MENINGIOMA'. \
 Always print results explicitly. Drug names and event terms are UPPERCASE."""
-        return _repl.run(python_code)
+        code = _coerce_python_code(python_code, query)
+        if not code:
+            return (
+                "Pass python_code (pandas against signal_df) or query "
+                "(drugname=='DRUG' AND pt=='EVENT')."
+            )
+        return _repl.run(code)
 
     return stats_tool

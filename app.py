@@ -22,7 +22,12 @@ import streamlit as st
 from rapidfuzz import process as fuzzy_process
 
 from src.agent.build_agent import build_pv_agent
-from src.config import CANDIDATE_LLM_MODELS, DEFAULT_LLM_MODEL, DISCLAIMER
+from src.config import (
+    CANDIDATE_LLM_MODELS,
+    DEFAULT_LLM_MODEL,
+    DISCLAIMER,
+    provider_for_model,
+)
 from src.guardrails.llm_judge import run_llm_judge
 from src.guardrails.validators import run_guardrails, extract_numbers, _numbers_match
 from src.ingestion.faers_ingest import load_signal_summary
@@ -250,7 +255,7 @@ st.markdown("""
 # ─────────────────────────────────────────────────────────────────────────────
 @st.cache_resource
 def get_agent(model: str):
-    return build_pv_agent(model=model, provider="groq")
+    return build_pv_agent(model=model, provider=provider_for_model(model))
 
 
 @st.cache_data
@@ -373,6 +378,206 @@ def parse_evidence_items(raw: str) -> list[dict]:
         block = re.sub(r"^\[(?:[^\]]+\.pdf)\]\s*", "", block, flags=re.IGNORECASE)
         items.append({"text": block, "relevance": rel})
     return items
+
+
+def _prr_strength_word(prr: float) -> str:
+    if prr >= 10:
+        return "Strong"
+    if prr >= 5:
+        return "Moderate"
+    if prr >= 2:
+        return "Weak"
+    return "None"
+
+
+def _strip_disclaimer(text: str) -> str:
+    if not text:
+        return ""
+    idx = text.lower().find("this tool surfaces reporting patterns")
+    if idx >= 0:
+        text = text[:idx]
+    return text.strip()
+
+
+def _stats_from_row(row) -> dict | None:
+    if row is None:
+        return None
+    try:
+        return {
+            "prr": float(row["prr"]),
+            "ror": float(row["ror"]),
+            "a": int(row["a_drug_and_event"]),
+            "serious": int(row["serious_reports"]),
+        }
+    except (KeyError, TypeError, ValueError):
+        return None
+
+
+def _stats_from_steps(steps) -> dict | None:
+    for action, obs in steps or []:
+        if getattr(action, "tool", None) != "calculate_pv_statistics":
+            continue
+        lines = [ln.strip() for ln in str(obs).splitlines() if ln.strip()]
+        if len(lines) < 2:
+            continue
+        header = re.split(r"\s+", lines[0].lower())
+        vals = re.split(r"\s+", lines[-1])
+        offset = max(len(vals) - len(header), 0)
+
+        def _col(name: str) -> str | None:
+            if name not in header:
+                return None
+            j = header.index(name) + offset
+            if 0 <= j < len(vals):
+                return vals[j]
+            return None
+
+        try:
+            return {
+                "prr": float(_col("prr")),
+                "ror": float(_col("ror")),
+                "a": int(float(_col("a_drug_and_event"))),
+                "serious": int(float(_col("serious_reports"))),
+            }
+        except (TypeError, ValueError):
+            continue
+    return None
+
+
+def _clean_bullet(text: str, prefixes: tuple[str, ...]) -> str:
+    text = re.sub(r"\s+", " ", (text or "").strip(" \t-•*"))
+    for prefix in prefixes:
+        text = re.sub(rf"^\*?\*?{re.escape(prefix)}\*?\*?:?\s*", "", text, flags=re.I)
+    return text.strip(" —:-").replace("**", "").strip()
+
+
+def _extract_abc(answer: str) -> tuple[str, str, str]:
+    text = _strip_disclaimer(answer)
+    abc = re.search(
+        r"\(a\)\s*(.+?)\s*\(b\)\s*(.+?)\s*\(c\)\s*(.+)$",
+        text,
+        flags=re.I | re.S,
+    )
+    if abc:
+        return (
+            _clean_bullet(abc.group(1), ("Strength", "Signal strength")),
+            _clean_bullet(abc.group(2), ("FAERS limitation", "Limitation")),
+            _clean_bullet(abc.group(3), ("Next step", "Recommended review")),
+        )
+    labeled = re.search(
+        r"(?:signal\s+)?strength:\s*(.+?)(?:faers\s+limitation:\s*(.+?))?(?:next\s+step:\s*(.+))?$",
+        text,
+        flags=re.I | re.S,
+    )
+    if labeled:
+        return (
+            _clean_bullet(labeled.group(1) or "", ("Strength", "Signal strength")),
+            _clean_bullet(labeled.group(2) or "", ("FAERS limitation", "Limitation")),
+            _clean_bullet(labeled.group(3) or "", ("Next step",)),
+        )
+    return "", "", ""
+
+
+def _extract_literature(answer: str) -> str:
+    text = _strip_disclaimer(answer)
+    match = re.search(
+        r"Literature:\s*(.+?)(?=\n\s*\**Bullets|\n\s*\(a\)|\n\s*-\s*\(a\)|\n\s*-\s*\*\*Signal strength|\Z)",
+        text,
+        flags=re.I | re.S,
+    )
+    if not match:
+        return ""
+    lit = re.sub(r"\s+", " ", match.group(1)).replace("**", "").strip()
+    if lit.lower().startswith("bullets"):
+        return ""
+    return lit
+
+
+def _literature_from_steps(steps, event: str | None) -> str:
+    items: list[dict] = []
+    saw_empty = False
+    for action, obs in steps or []:
+        if getattr(action, "tool", None) not in (
+            "search_literature",
+            "search_drug_label",
+            "search_signal_evidence",
+        ):
+            continue
+        raw = str(obs)
+        if "no matching" in raw.lower():
+            saw_empty = True
+            continue
+        items.extend(parse_evidence_items(raw))
+    summarized = _summarize_evidence_items(items, event)
+    if summarized:
+        return summarized[0]["text"]
+    if saw_empty or not items:
+        return "No matching literature was retrieved."
+    return _display_evidence(items[0]["text"])
+
+
+def format_standard_interpretation(
+    answer: str,
+    *,
+    drug: str | None = None,
+    event: str | None = None,
+    row=None,
+    steps=None,
+) -> str:
+    """Rebuild the AI Interpretation block in one layout for every model."""
+    stats = _stats_from_row(row) or _stats_from_steps(steps)
+    a_txt, b_txt, c_txt = _extract_abc(answer)
+    lit = _extract_literature(answer) or _literature_from_steps(steps, event)
+
+    if stats:
+        strength = _prr_strength_word(stats["prr"])
+        if not a_txt:
+            a_txt = (
+                f"{strength} — PRR of {stats['prr']:.2f} is "
+                f"{'far above' if stats['prr'] >= 10 else 'in'} the "
+                f">=10 / >=5 / >=2 thresholds, indicating "
+                f"{'marked' if stats['prr'] >= 10 else 'a'} disproportionality "
+                f"in reporting rates."
+            )
+        elif not re.match(rf"{re.escape(strength)}\b", a_txt, flags=re.I):
+            a_txt = f"{strength} — {a_txt}"
+        pair = f"{drug or 'the drug'} / {event or 'the event'}"
+        stats_block = (
+            f"- PRR: {stats['prr']:.2f}\n"
+            f"- ROR: {stats['ror']:.2f}\n"
+            f"- a_drug_and_event (drug + event reports): {stats['a']:,}\n"
+            f"- serious_reports: {stats['serious']:,}"
+        )
+        header = f"Here is the FAERS analysis for the {pair} pair."
+    else:
+        stats_block = "- No statistics were returned by the stats tool."
+        header = "Here is the FAERS analysis."
+
+    if not b_txt:
+        b_txt = (
+            "Spontaneous reporting is subject to under-reporting, duplicates, "
+            "and missing denominators, so these ratios reflect reporting "
+            "patterns, not incidence."
+        )
+    if not c_txt:
+        c_txt = (
+            "Review individual case reports (including the serious subset) "
+            "for temporality and confounders before any regulatory or clinical action."
+        )
+    if not lit:
+        lit = "No matching literature was retrieved."
+
+    return (
+        f"{header}\n\n"
+        f"**Statistics (from the stats tool):**\n"
+        f"{stats_block}\n\n"
+        f"**Literature:** {lit}\n\n"
+        f"**Bullets:**\n"
+        f"- (a) **Strength:** {a_txt}\n"
+        f"- (b) **FAERS limitation:** {b_txt}\n"
+        f"- (c) **Next step:** {c_txt}\n\n"
+        f"{DISCLAIMER}"
+    )
 
 
 def run_and_collect(executor, query: str) -> dict:
@@ -498,9 +703,18 @@ with left:
 
     st.markdown("---")
     st.markdown('<div class="section-label">Model</div>', unsafe_allow_html=True)
-    new_model = st.selectbox("LLM Model", CANDIDATE_LLM_MODELS,
-                             index=CANDIDATE_LLM_MODELS.index(st.session_state.model_name),
-                             label_visibility="collapsed")
+    try:
+        model_index = CANDIDATE_LLM_MODELS.index(st.session_state.model_name)
+    except ValueError:
+        st.session_state.model_name = DEFAULT_LLM_MODEL
+        model_index = 0
+    new_model = st.selectbox(
+        "LLM Model",
+        CANDIDATE_LLM_MODELS,
+        index=model_index,
+        format_func=lambda m: f"{m}  ({provider_for_model(m)})",
+        label_visibility="collapsed",
+    )
     if new_model != st.session_state.model_name:
         st.session_state.model_name = new_model
         st.rerun()
@@ -543,9 +757,9 @@ if run_btn:
                 f"print prr,ror,a_drug_and_event,serious_reports) "
                 f"and search_literature('{drug_name} {event_name}'). "
                 f"Numbers only from the stats tool. Ignore unrelated literature. "
-                f"Then 3 short bullets: (a) strong/moderate/weak from PRR "
-                f"(>=10 / >=5 / >=2), (b) one FAERS limitation, (c) one next step. "
-                f"No causal claims, no tables, no PDF names."
+                f"Then write the final answer using the FINAL ANSWER FORMAT "
+                f"from the system prompt (Statistics, Literature, then bullets "
+                f"(a)(b)(c)). No causal claims, no tables, no PDF names."
             )
 
             with centre:
@@ -684,27 +898,18 @@ with centre:
                     unsafe_allow_html=True,
                 )
 
-        # ── LLM interpretation (concise bullets) ──────────────────────────
-        answer = res["answer"]
-
-        # Strip markdown tables and excess blank lines from agent answer
-        # (agent may still produce tables despite instructions — we clean them)
-        clean_lines = []
-        for line in answer.split("\n"):
-            stripped = line.strip()
-            # Skip markdown table rows and horizontal rules
-            if stripped.startswith("|") or stripped.startswith("---") or stripped == "---":
-                continue
-            clean_lines.append(line)
-        clean_answer = "\n".join(clean_lines).strip()
-        # Collapse 3+ blank lines to 1
-        import re as _re
-        clean_answer = _re.sub(r"\n{3,}", "\n\n", clean_answer)
-
-        if clean_answer:
+        # ── LLM interpretation (same layout for every model) ──────────────
+        answer = res.get("answer") or ""
+        if answer.strip() or res.get("steps"):
+            formatted = format_standard_interpretation(
+                answer,
+                drug=ctx.get("drug"),
+                event=ctx.get("event"),
+                row=ctx.get("row"),
+                steps=res.get("steps"),
+            )
             st.markdown('<div class="section-header">AI Interpretation</div>', unsafe_allow_html=True)
-            # Render markdown natively so bullet points display properly
-            st.markdown(clean_answer)
+            st.markdown(formatted)
 
         # Static limitation + review boxes (always shown for signal queries)
         if ctx.get("mode") == "signal":
