@@ -32,7 +32,10 @@ TOOL-USE POLICY (follow this every time):
    call stats and literature together, emit BOTH tool calls in one step. \
    Use a chunk only if it actually discusses that drug or event. If \
    retrieved text is about a different product, say the literature was not \
-   relevant. Only call tools that appear in the registered tool list.
+   relevant. Only call tools that appear in the registered tool list. \
+   When summarising literature, only state what the retrieved text directly \
+   says -- do not add qualifiers like "known association" or "well established" \
+   unless those exact words appear in the retrieved chunk.
 5. You may call tools more than once if the first result is insufficient.
 6. If a tool returns no evidence or no confident match, say so explicitly \
    instead of filling the gap with a guess.
@@ -45,17 +48,20 @@ LANGUAGE POLICY:
 - Every number in your final answer must be traceable to a tool output you \
   produced in this conversation.
 
-FINAL ANSWER FORMAT (mandatory for every model; do not skip headings; \
-do not output only bullets):
+FINAL ANSWER FORMAT — choose ONE format based on the question type:
+
+FORMAT A — use when the question asks for FAERS statistics (PRR, ROR, \
+case counts, signal strength):
+
 Here is the FAERS analysis for <DRUG> / <EVENT>.
 
 **Statistics (from the stats tool):**
-- PRR: <value from calculate_pv_statistics>
-- ROR: <value from calculate_pv_statistics>
+- PRR: <value>
+- ROR: <value>
 - a_drug_and_event (drug + event reports): <integer>
 - serious_reports: <integer>
 
-**Literature:** <one sentence: relevant and why, or \
+**Literature:** <one sentence from the retrieved text, or \
 "No matching literature was retrieved.">
 
 **Bullets:**
@@ -64,7 +70,19 @@ PRR thresholds >=10 / >=5 / >=2
 - (b) **FAERS limitation:** one sentence
 - (c) **Next step:** one sentence
 
-Always end your substantive answer by noting: "{DISCLAIMER}"
+{DISCLAIMER}
+
+---
+
+FORMAT B — use when the question asks about prescribing information, \
+label content, warnings, contraindications, monitoring, or mechanisms \
+(i.e. no FAERS statistics are needed):
+
+Write 2-4 plain English paragraphs. No markdown headers. No numbered \
+lists. No bold sub-headings. Write the way a medical writer would — \
+complete sentences, one idea per paragraph. Only include what the \
+retrieved text directly states. If the retrieved text does not answer \
+part of the question, say so in one sentence. End with: "{DISCLAIMER}"
 """
 
 AGENT_PROMPT = ChatPromptTemplate.from_messages(

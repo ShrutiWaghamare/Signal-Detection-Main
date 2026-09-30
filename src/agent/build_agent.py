@@ -11,6 +11,7 @@ from langchain_core.tools import tool as tool_decorator
 from src.agent.llm_provider import build_llm
 from src.agent.prompts import AGENT_PROMPT
 from src.config import (
+    CHUNK_SIZE,
     DEFAULT_LLM_MODEL,
     DEFAULT_LLM_PROVIDER,
     DEFAULT_TOP_K_FINAL,
@@ -42,8 +43,10 @@ def _make_retriever_tool(retriever, name: str, description: str, *, skip_rerank:
         lines = []
         for doc, score in top:
             snippet = " ".join(doc.page_content.split())
-            if len(snippet) > 280:
-                snippet = snippet[:280].rsplit(" ", 1)[0] + "…"
+            if len(snippet) > CHUNK_SIZE:
+                cut = snippet[:CHUNK_SIZE]
+                stop = max(cut.rfind(". "), cut.rfind("? "), cut.rfind("! "))
+                snippet = cut[: stop + 1].strip() if stop >= CHUNK_SIZE // 3 else cut.rsplit(" ", 1)[0] + "…"
             lines.append(f"[relevance {score:.3f}] {snippet}")
         return "\n\n".join(lines)
 

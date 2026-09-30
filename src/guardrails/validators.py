@@ -114,15 +114,71 @@ def check_empty_evidence(tool_outputs: list[str]) -> bool:
 
 # --- main entry point ---------------------------------------------------------
 
-def run_guardrails(answer_text: str, tool_output_text: str, tool_outputs: list[str]) -> dict:
-    faithful, unverified_numbers = check_numeric_faithfulness(answer_text, tool_output_text)
-    has_evidence = check_empty_evidence(tool_outputs)
+def check_empty_tool_response(answer_text: str, tool_outputs: list[str]) -> tuple[bool, str | None]:
+    """If ALL tools returned empty/no-match, the answer must say 'no data'
+    or 'not found'. Flag it if the model answered confidently with no evidence.
+    """
+    all_empty = not check_empty_evidence(tool_outputs)
+    if not all_empty:
+        return True, None
+    no_data_phrases = ("no data", "not found", "no match", "no result",
+                       "no evidence", "could not find", "not available")
+    answered_anyway = not any(p in answer_text.lower() for p in no_data_phrases)
+    if answered_anyway:
+        return False, (
+            "All tools returned empty/no-match but the answer did not "
+            "acknowledge this. Model may have answered from memory."
+        )
+    return True, None
+
+
+def check_drug_event_match(
+    answer_text: str,
+    expected_drug: str | None,
+    expected_event: str | None,
+) -> tuple[bool, str | None]:
+    """If a specific drug or event was queried, verify they appear in the answer.
+    Prevents the model from answering about a different drug/event silently.
+    """
+    if not expected_drug and not expected_event:
+        return True, None
+    answer_lower = answer_text.lower()
     issues = []
+    if expected_drug and expected_drug.lower() not in answer_lower:
+        issues.append(
+            f"Expected drug '{expected_drug}' not mentioned in answer — "
+            "model may have answered about a different drug."
+        )
+    if expected_event and expected_event.lower() not in answer_lower:
+        # Soft check — only warn, not fail (event term may be paraphrased)
+        pass
+    return (len(issues) == 0), (issues[0] if issues else None)
+
+
+def run_guardrails(
+    answer_text: str,
+    tool_output_text: str,
+    tool_outputs: list[str],
+    expected_drug: str | None = None,
+    expected_event: str | None = None,
+) -> dict:
+    issues = []
+
+    # Check 1 — numeric faithfulness (numbers in answer must trace to tool output)
+    faithful, unverified_numbers = check_numeric_faithfulness(answer_text, tool_output_text)
     if not faithful:
         issues.append(
-            f"Unverified numbers in answer (not in tool output, > 10, not small prose numbers): "
-            f"{unverified_numbers}"
+            f"Unverified numbers in answer (not in tool output): {unverified_numbers}"
         )
-    if not has_evidence:
-        issues.append("No tool returned usable evidence; the answer should state this explicitly.")
+
+    # Check 2 — empty evidence acknowledgement
+    empty_ok, empty_issue = check_empty_tool_response(answer_text, tool_outputs)
+    if not empty_ok and empty_issue:
+        issues.append(empty_issue)
+
+    # Check 3 — drug/event identity match
+    match_ok, match_issue = check_drug_event_match(answer_text, expected_drug, expected_event)
+    if not match_ok and match_issue:
+        issues.append(match_issue)
+
     return {"passed": len(issues) == 0, "issues": issues}

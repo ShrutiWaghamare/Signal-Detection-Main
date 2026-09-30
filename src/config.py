@@ -74,17 +74,34 @@ DEFAULT_LLM_PROVIDER = "groq"
 
 OLLAMA_BASE_URL = "http://localhost:11434"
 
+# OpenAI-compatible external providers (each uses ChatOpenAI with a different base_url).
+OPENAI_COMPAT_BASE_URLS: dict[str, str] = {
+    "sambanova": "https://api.sambanova.ai/v1",
+    "cerebras":  "https://api.cerebras.ai/v1",
+    "mistral":   "https://api.mistral.ai/v1",
+}
+# Env-var name for each provider's API key.
+OPENAI_COMPAT_KEY_ENV: dict[str, str] = {
+    "sambanova": "SAMBANOVA_API_KEY",
+    "cerebras":  "CEREBRAS_API_KEY",
+    "mistral":   "MISTRAL_API_KEY",
+}
+
 DEFAULT_LLM_MODEL = "openai/gpt-oss-120b"
 
-# Groq hosted (free key) + one local open-source model for side-by-side comparison.
-# Llama 3.1 8B is the comparison pick: tool-calling, stronger than Phi-3.5, more
-# standard than Mistral 7B for this agent. Serve it with Ollama, not Groq
-# (Groq Llama 8B/70B 404 on this free org).
+# Hosted models shown in the Streamlit dropdown.
+# Add a model here and it will appear automatically — no other changes needed.
+# Gemini requires a full LangGraph migration; see llm_provider.py for details.
 MODEL_PROVIDERS: dict[str, str] = {
-    "openai/gpt-oss-120b": "groq",
-    "qwen/qwen3.8-27b": "groq",
-    "llama3.1:8b": "ollama",
-    "qwen2.5:3b": "ollama",
+    "openai/gpt-oss-120b":              "groq",
+    "qwen/qwen3.8-27b":                 "groq",
+    "openai/gpt-oss-20b":               "groq",
+    "ministral-8b-latest":              "mistral",     # free tier, fast, tool-calling verified
+    "ministral-14b-latest":             "mistral",     # free tier, stronger, tool-calling verified
+    # SambaNova + Cerebras require adding a payment method on their console first:
+    # "Meta-Llama-3.3-70B-Instruct":   "sambanova",
+    # "DeepSeek-V3.2":                 "sambanova",
+    # "qwen-3.8-27b":                  "cerebras",
 }
 CANDIDATE_LLM_MODELS: list[str] = list(MODEL_PROVIDERS.keys())
 
@@ -102,6 +119,18 @@ LOCAL_CANDIDATE_LLM_MODELS: list[str] = [
 ]
 
 LLM_TEMPERATURE = 0.0
+
+# --------------------------------------------------------------------------
+# Token budget — controlled by DEV_MODE in .env
+# --------------------------------------------------------------------------
+# DEV_MODE=true  → 300 tokens   quick test: did the pipeline call tools correctly?
+# DEV_MODE=false → 1024 tokens  real use:   full structured PV answers
+# RAGAS eval always uses 2048 regardless (set directly in ragas_eval.py)
+import os as _os
+_dev = _os.getenv("DEV_MODE", "false").strip().lower() in ("1", "true", "yes")
+LLM_MAX_TOKENS: int = 300 if _dev else 1024
+DEV_MODE: bool = _dev
+del _os, _dev
 
 # --------------------------------------------------------------------------
 # Embedding model

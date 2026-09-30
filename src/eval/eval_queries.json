@@ -1,7 +1,29 @@
 [
   {
-    "query": "What is the PRR and ROR for DEPO-PROVERA and MENINGIOMA?",
+    "id": "pv_001",
+    "query": "What is the PRR and ROR for DEPO-PROVERA and MENINGIOMA? How many serious reports are there?",
     "expected_drug": "DEPO-PROVERA",
-    "expected_event": "MENINGIOMA"
+    "expected_event": "MENINGIOMA",
+    "ground_truth": "The PRR for DEPO-PROVERA and MENINGIOMA is 4972.24 and the ROR is 82745.25. There are 9684 reports with both the drug and event recorded, and 324 of those are classified as serious outcomes. This is a strong disproportionality signal, well above the PRR threshold of 2.",
+    "category": "stats",
+    "notes": "Key numbers: PRR=4972.24041, ROR=82745.248693, a_drug_and_event=9684, serious_reports=324"
+  },
+  {
+    "id": "pv_002",
+    "query": "What does the Depo-Provera prescribing information say about bone mineral density loss and long-term use?",
+    "expected_drug": "DEPO-PROVERA",
+    "expected_event": "BONE MINERAL DENSITY DECREASED",
+    "ground_truth": "According to the Depo-Provera prescribing information, women who use Depo-Provera CI may lose significant bone mineral density. Bone loss is greater with increasing duration of use and may not be completely reversible. The label recommends that Depo-Provera CI should not be used as a long-term contraceptive method for more than 2 years unless other methods are inadequate.",
+    "category": "literature",
+    "notes": "Tests label retrieval and 2-year threshold recall"
+  },
+  {
+    "id": "pv_003",
+    "query": "What are the contraindications listed in the Depo-Provera prescribing information?",
+    "expected_drug": "DEPO-PROVERA",
+    "expected_event": "CONTRAINDICATION",
+    "ground_truth": "The Depo-Provera prescribing information lists the following contraindications: active thrombophlebitis, current or past history of thromboembolic disorders or cerebral vascular disease, known or suspected malignancy of the breast, and known hypersensitivity to medroxyprogesterone acetate or any component of the formulation.",
+    "category": "literature",
+    "notes": "Tests contraindication section retrieval"
   }
 ]

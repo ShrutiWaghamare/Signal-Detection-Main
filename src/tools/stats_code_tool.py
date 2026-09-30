@@ -119,6 +119,47 @@ def compute_2x2_counts(flat_df: pd.DataFrame, drug: str, event: str) -> dict:
     }
 
 
+def _ensure_clean_output(code: str) -> str:
+    """Guarantee the tool output is unambiguous for any LLM size.
+
+    If the last statement is a bare DataFrame expression (no print / to_dict /
+    to_string / to_json already applied), we wrap it so the row index is
+    stripped and the result is returned as a list-of-dicts.  This prevents
+    small models from misreading the numeric FAERS row-ID as a column value.
+    """
+    import re as _re
+
+    stripped = code.strip()
+    lines = stripped.splitlines()
+    if not lines:
+        return code
+
+    last = lines[-1].strip()
+    already_formatted = any(
+        kw in last
+        for kw in ("print(", "to_dict", "to_string", "to_json", "to_csv", "values")
+    )
+    # Only wrap bare expressions (no assignment, no existing formatting)
+    is_bare_expr = (
+        last
+        and not last.startswith("#")
+        and not already_formatted
+        and "=" not in last.split("[")[0]   # not an assignment
+    )
+    if is_bare_expr:
+        # Replace last line with a clean print statement
+        lines[-1] = (
+            f"_r = ({last})\n"
+            "if hasattr(_r, 'reset_index'):\n"
+            "    print(_r.reset_index(drop=True).to_dict('records'))\n"
+            "else:\n"
+            "    print(_r)"
+        )
+        return "\n".join(lines)
+
+    return code
+
+
 def build_stats_code_tool(signal_df: pd.DataFrame | None = None):
     """Build the code-execution tool with the pre-aggregated FAERS signal
     summary already bound in its local namespace. If signal_df is not
@@ -156,6 +197,7 @@ Always print results explicitly. Drug names and event terms are UPPERCASE."""
                 "Pass python_code (pandas against signal_df) or query "
                 "(drugname=='DRUG' AND pt=='EVENT')."
             )
-        return _repl.run(code)
+        clean_code = _ensure_clean_output(code)
+        return _repl.run(clean_code)
 
     return stats_tool

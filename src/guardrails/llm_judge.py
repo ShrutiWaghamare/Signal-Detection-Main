@@ -110,16 +110,23 @@ def run_llm_judge(
     if not os.getenv("GROQ_API_KEY"):
         return _error_result("GROQ_API_KEY not set; LLM judge skipped.")
 
-    # Send a compact summary (first 200 chars per tool) instead of full outputs.
-    # This cuts judge input from ~2000 tokens to ~300, staying well under the
-    # rate-limit bucket that the main agent calls already partially consumed.
+    # Send a compact summary of each tool output to the judge.
+    # Stats tools: first 300 chars (numeric table is short).
+    # Literature tools: up to 800 chars so all returned snippets are visible —
+    # truncating at 200 caused the judge to miss lower-ranked but relevant chunks
+    # (e.g. a meningioma warning at relevance 0.92 after a bone-accretion snippet
+    # at 1.00), leading to false "evidence_grounded=false" verdicts.
     compact = []
     for i, out in enumerate(tool_outputs, 1):
-        first_line = out.replace("\n", " ").strip()[:200]
-        low = first_line.lower()
+        flat = out.replace("\n", " ").strip()
+        low = flat.lower()
         if "prr" in low and "ror" in low:
-            first_line = "FAERS stats table (pair names may be omitted): " + first_line
-        compact.append(f"[Tool {i}] {first_line}")
+            # Stats table: keep compact, label clearly so judge knows index is not data
+            flat = "FAERS stats table (row index = FAERS record ID, not a value): " + flat[:300]
+        else:
+            # Literature / other tools: show enough for all snippets to be visible
+            flat = flat[:800]
+        compact.append(f"[Tool {i}] {flat}")
     tool_text = "\n".join(compact) if compact else "(no tool outputs)"
 
     from langchain_core.messages import HumanMessage, SystemMessage
